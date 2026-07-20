@@ -1,6 +1,6 @@
 ---
 name: code-ts-game-framework
-description: Build or extend simple browser-based TypeScript games for a trusted group of friends using the current Phantom Ink architecture. Use when creating a game in code/, or implementing DEBUG_ID-isolated localStorage identities, player profiles, rooms and lobbies, server persistence and message passing, consensus voting, shared reducers, responsive Svelte UI, or XState game flows.
+description: Build or extend simple browser-based TypeScript games for a trusted group of friends using the current Phantom Ink architecture. Use when creating a game in code/, or implementing DEBUG_ID-isolated localStorage identities, player profiles, rooms, lobbies, rejoining, server persistence and message passing, consensus voting, shared reducers, responsive Svelte UI, XState game flows, or live debug helpers and routes.
 ---
 
 # Build TypeScript Multiplayer Games
@@ -133,6 +133,18 @@ Drive this lifecycle:
 
 Return a compact `RoomViewState`, not raw persistence rows. Include connection status, the viewer's player ID, snapshot version, members, vote summaries, phase, the full game state, and any `startProblem`. Derive it with a shared selector as in [`selectRoomViewState`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/onlineGame.ts#L229-L253).
 
+### Rejoin the current room
+
+Intend a returning player to resume their existing room and game without re-entering a code.
+
+1. Load the stored `userId`.
+2. Call `users.currentRoom`; keep the server as the source of truth instead of storing a room snapshot locally. See the [RPC contract](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/rpc.ts#L24-L41) and [server lookup](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/server/src/index.ts#L66-L70).
+3. If it returns a code, navigate to `/room/[code]` while preserving `DEBUG_ID`.
+4. Let the room route call `rooms.join` again and reopen `rooms.events`. Join is idempotent for an existing member, and the returned snapshot restores the current lobby or game phase.
+5. If no room remains, continue to the lobby. An explicit abandon action sends `leave` before navigating away, as in the [root layout](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/%2Blayout.svelte#L275-L291).
+
+A refresh on `/room/[code]` follows the same join-and-stream path directly. Joining a different room automatically leaves the previous one through [`leaveOtherRooms`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/server/src/index.ts#L490-L509). Active games remain available for rejoining; presence cleanup only removes inactive lobby membership.
+
 ## Use server storage and message passing
 
 Use this flow for a single-process hobby deployment:
@@ -257,6 +269,45 @@ Copy the actual [`createInitialGameState`, apply wrapper, and persisted snapshot
 
 Wrap game events inside room actions. Check the actor's role and event identity before handing the event to XState, as in [`canApplyGameAction`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/onlineGame.ts#L327-L345). XState guards enforce game rules; the room reducer enforces which network user may attempt them.
 
+## Add two debug surfaces
+
+Keep debugging small: one global live-room API and one local debug route.
+
+### Expose live-room helpers
+
+Expose `window.DEBUG` while the room route is mounted. Follow the console convention in Phantom Ink's [README](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/README.md#L40-L51) and include:
+
+```ts
+window.DEBUG.getState();          // cloned game state
+window.DEBUG.saveState();         // save to a dedicated debug localStorage key
+await window.DEBUG.loadState();   // load the saved state
+await window.DEBUG.loadState(x);  // load a state, { state }, or JSON
+await window.DEBUG.setState(x);   // alias for loadState
+window.DEBUG.getRoom();           // cloned room view
+await window.DEBUG.resetRoom();   // return the room to its lobby
+```
+
+Treat the saved debug snapshot as the one exception to the rule against browser-stored game state. Keep it in the existing namespaced `LocalStorage`, so each `DEBUG_ID` gets its own snapshot.
+
+Load state through a debug room action rather than changing one client's state:
+
+```ts
+| { type: 'load-state'; actorId: PlayerId; state: PhantomInkGameState }
+```
+
+Parse a plain state, `{ state }`, or JSON; clone it into `gameState`; set the phase to `playing`; append the action; and broadcast the room snapshot. Implement reset with the existing [`reset-room` action](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/onlineGame.ts#L327-L337). Remove the global functions when the room route unmounts so they never retain stale room closures.
+
+### Build `/debug/game`
+
+Use a local debug route to exercise the real game UI without creating accounts, rooms, or server state. Copy Phantom Ink's [`debug/game/+page.svelte`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/debug/game/%2Bpage.svelte#L1-L145):
+
+- Run the real `gameMachine` in a local actor and render the real `GameScreen`.
+- Provide baked-in mock players with distinct names, icons, and colors.
+- Switch `viewerId` to act as each player and inspect every player's perspective.
+- Select any machine state and active team through debug-only events. See the machine's [`debugSetState` and `debugSetTeam`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/game.ts#L240-L258).
+- Add a few named baked scenarios by resetting the actor and sending deterministic setup events. Cover the states that otherwise require several players or many turns to reach.
+- Keep the route local and disposable. Use real `DEBUG_ID` tabs and `window.DEBUG` when testing networking or shared live-room behavior.
+
 ## Reuse the UI skeleton
 
 Build the product flow in this order:
@@ -307,8 +358,9 @@ Keep mobile-height constraints, reduced-motion behavior, keyboard focus, `aria-p
 3. Define serializable shared user, room, action, viewer-state, and game types.
 4. Implement and test pure room reduction before wiring HTTP.
 5. Add SQLite action persistence, typed commands, streaming snapshots, and basic actor checks.
-6. Build start, setup, lobby, and room routes around real server state.
+6. Build start, setup, lobby, and room routes, including room rejoining.
 7. Implement the XState game machine and its plain persisted wrapper.
 8. Add room votes and game votes in shared code, then attach vote-aware UI primitives.
-9. Test create, join, reconnect, leave, invalid action, spectator join, consensus reset, game start, and refresh with multiple DEBUG_ID tabs.
-10. Run the repository's typecheck, tests, lint, and production build. Prefer meaningful reducer and state-machine tests over trivial component tests.
+9. Add `window.DEBUG` and `/debug/game`; bake in representative states and player perspectives.
+10. Test create, join, rejoin, leave, invalid action, spectator join, consensus reset, game start, state load/reset, and refresh with multiple DEBUG_ID tabs.
+11. Run the repository's typecheck, tests, lint, and production build. Prefer meaningful reducer and state-machine tests over trivial component tests.
