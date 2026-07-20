@@ -1,17 +1,27 @@
 ---
 name: code-ts-game-framework
-description: Build or extend browser-based TypeScript multiplayer party and board games using the current Phantom Ink architecture. Use when creating a game in code/, or implementing DEBUG_ID-isolated localStorage identities, player profiles, rooms and lobbies, server persistence and message passing, consensus voting, shared reducers, responsive Svelte UI, or XState game flows.
+description: Build or extend simple browser-based TypeScript games for a trusted group of friends using the current Phantom Ink architecture. Use when creating a game in code/, or implementing DEBUG_ID-isolated localStorage identities, player profiles, rooms and lobbies, server persistence and message passing, consensus voting, shared reducers, responsive Svelte UI, or XState game flows.
 ---
 
 # Build TypeScript Multiplayer Games
 
-Use Phantom Ink as the canonical starting point for every pattern in this skill, including the Svelte UI.
+Use Phantom Ink as the canonical starting point for every pattern in this skill, including the Svelte UI. Copy its proven flow before inventing abstractions.
 
 The links in this skill pin the inspected revision so line references remain stable:
 
 - [Phantom Ink `1398bd4`](https://github.com/smirea/phantom-ink/tree/1398bd43841fd9e7533f0106041169cb4cab9e8b) — canonical SvelteKit, oRPC, SQLite action log, rooms, profiles, voting, and XState.
 
 Before copying, inspect the repository's current default branch for improvements made after this revision. Read the linked files and their imports rather than relying only on the excerpts here.
+
+## Keep it simple
+
+Optimize for a trusted friend group, one Bun server, one SQLite file, and easy local development.
+
+- Send the full game state to every client. Hide secret information in the UI for gameplay; do not build per-user redaction.
+- Use the local `userId` as identity. Do not add authentication, permissions, signed sessions, or account recovery.
+- Keep one shared reducer, one command path, and one event stream.
+- Avoid brokers, queues, microservices, generic framework layers, and multi-process support until a real need appears.
+- Prefer a small duplicated helper over a premature abstraction.
 
 ## Default architecture
 
@@ -28,8 +38,8 @@ See the [workspace scripts and package layout](https://github.com/smirea/phantom
 Keep these boundaries:
 
 - Put authoritative, framework-free room and game transitions in `packages/shared` so the server, optimistic client, replay, and tests use the same code.
-- Let the server validate identity, append accepted actions, derive the next state, and broadcast snapshots.
-- Let the UI render a viewer-specific snapshot and send semantic actions. Do not let components mutate authoritative state directly.
+- Let the server check game rules, append accepted actions, derive the next state, and broadcast snapshots.
+- Let the UI render the shared snapshot and send semantic actions. Do not let components mutate authoritative state directly.
 - Store only identity pointers and UI preferences in browser storage. Do not store the authoritative room or game snapshot there.
 
 ## Copy the localStorage and DEBUG_ID flow
@@ -74,7 +84,7 @@ Verify the flow by completing account setup in two tabs, one with `?DEBUG_ID=ali
 
 ## Implement account setup
 
-Model the account as a small server record with `id`, `name`, `color`, and `icon`. This is a lightweight identity pointer, not secure authentication.
+Model the account as a small server record with `id`, `name`, `color`, and `icon`. Treat it as a convenient player identity, not authentication.
 
 Follow Phantom Ink's flow:
 
@@ -86,7 +96,7 @@ Follow Phantom Ink's flow:
 - Present name, icon choices, color choices, and randomization on one focused screen. Copy the behavior from [`setup/+page.svelte`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/setup/%2Bpage.svelte#L1-L204).
 - Render identity everywhere through one [`Avatar`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/lib/Avatar.svelte#L1-L47) and one icon/color mapping layer rather than duplicating presentation logic.
 
-Keep the in-memory app user reactive so profile edits update the UI immediately. Debounce background saves, but explicitly await the first save before entering protected routes.
+Keep the in-memory app user reactive so profile edits update the UI immediately. Debounce background saves, but explicitly await the first save before entering routes that need a profile.
 
 ## Build the room and lobby lifecycle
 
@@ -113,7 +123,7 @@ type OnlineRoomAction =
 
 Drive this lifecycle:
 
-1. Require a saved account before lobby or room routes.
+1. Require a saved profile before lobby or room routes.
 2. List open rooms and online users in the lobby. Phantom Ink polls the directory and presence every 2.5 seconds in [`lobby/+page.svelte`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/lobby/%2Bpage.svelte#L37-L111).
 3. Navigate room creation through `/room/new`; create on mount; replace the temporary URL with the returned code. Join existing rooms through `/room/[code]`. See the [room connection flow](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/room/%5Bcode%5D/%2Bpage.svelte#L72-L148).
 4. Render an optimistic room immediately using [`optimisticRoom.svelte.ts`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/lib/optimisticRoom.svelte.ts#L1-L32), then replace it with the server snapshot.
@@ -121,7 +131,7 @@ Drive this lifecycle:
 6. Start only when shared validation passes and the ready vote reaches consensus. Add players who join an active game as spectators.
 7. Keep one current room per account by leaving other rooms on join. Use presence pings to prune abandoned lobby rooms; do not destroy an active game merely because a client briefly disconnects. See [server presence and room creation/joining](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/server/src/index.ts#L57-L156).
 
-Return a viewer-specific `RoomViewState`, not raw persistence rows. Include connection status, the viewer's player ID, snapshot version, members, vote summaries, phase, game state, and any `startProblem`. Derive it with a shared selector as in [`selectRoomViewState`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/onlineGame.ts#L229-L253).
+Return a compact `RoomViewState`, not raw persistence rows. Include connection status, the viewer's player ID, snapshot version, members, vote summaries, phase, the full game state, and any `startProblem`. Derive it with a shared selector as in [`selectRoomViewState`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/packages/shared/src/onlineGame.ts#L229-L253).
 
 ## Use server storage and message passing
 
@@ -130,10 +140,10 @@ Use this flow for a single-process hobby deployment:
 ```text
 UI event
   -> typed OnlineRoomAction RPC
-  -> server identity check and shared reducer
+  -> server actor check and shared reducer
   -> append accepted action to SQLite
   -> update in-memory snapshot cache
-  -> broadcast viewer-specific room snapshots
+  -> broadcast room snapshots
   -> streamed event updates every connected UI
 ```
 
@@ -156,7 +166,7 @@ await api.rooms.action({
 - Rebuild a room by replaying actions through `applyOnlineRoomAction`; cache the result; clone and reduce before accepting a new action; append only changed actions; then broadcast. Copy [`loadRoomState` and `appendRoomAction`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/server/src/index.ts#L432-L488).
 - Keep per-room client queues and heartbeats in memory, as in [`streamRoom` and `broadcastRoom`](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/server/src/index.ts#L518-L582).
 
-Treat the shared reducer as the security and consistency boundary. Reject actions from the wrong actor, illegal phase, ineligible role, or invalid game state. The server response and stream are authoritative; optimistic client reduction is only a latency improvement, as shown by Phantom Ink's [pending game-action replay](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/room/%5Bcode%5D/%2Bpage.svelte#L279-L316).
+Treat the shared reducer as the consistency boundary. Keep only the checks needed to prevent accidental illegal moves: wrong actor, phase, role, or game state. The server response and stream are authoritative; optimistic client reduction is only a latency improvement, as shown by Phantom Ink's [pending game-action replay](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/room/%5Bcode%5D/%2Bpage.svelte#L279-L316).
 
 This in-memory broadcast map assumes one server process. SQLite makes state durable, but it does not fan out messages across replicas. Add a shared pub/sub layer only if the deployment actually becomes multi-process.
 
@@ -277,7 +287,7 @@ In the room route, switch on the server phase:
 {/if}
 ```
 
-See the actual [room lobby/game split](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/room/%5Bcode%5D/%2Bpage.svelte#L319-L420). Keep `GameScreen` driven by `state`, `context`, `viewerId`, player presentation data, and one `send` callback. Derive what the viewer may see and do from those inputs.
+See the actual [room lobby/game split](https://github.com/smirea/phantom-ink/blob/1398bd43841fd9e7533f0106041169cb4cab9e8b/apps/ui/src/routes/room/%5Bcode%5D/%2Bpage.svelte#L319-L420). Keep `GameScreen` driven by `state`, `context`, `viewerId`, player presentation data, and one `send` callback. Derive what the UI displays and enables from those inputs; the full context may remain client-side.
 
 Reuse component roles, not Phantom Ink's theme:
 
@@ -296,7 +306,7 @@ Keep mobile-height constraints, reduced-motion behavior, keyboard focus, `aria-p
 2. Copy the local storage, DEBUG_ID, profile, and navigation flow; prove two same-browser identities work.
 3. Define serializable shared user, room, action, viewer-state, and game types.
 4. Implement and test pure room reduction before wiring HTTP.
-5. Add SQLite action persistence, typed commands, streaming snapshots, and identity checks.
+5. Add SQLite action persistence, typed commands, streaming snapshots, and basic actor checks.
 6. Build start, setup, lobby, and room routes around real server state.
 7. Implement the XState game machine and its plain persisted wrapper.
 8. Add room votes and game votes in shared code, then attach vote-aware UI primitives.
